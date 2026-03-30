@@ -2,80 +2,69 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
+import urllib.parse
 
 class Weather(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
-    def get_weather_desc(self, code):
-        weather_codes = {
-            0: "晴朗 ☀️", 1: "主要晴朗 🌤️", 2: "部分多雲 ⛅", 3: "陰天 ☁️",
-            45: "霧 🌫️", 51: "毛毛雨 🌧️", 61: "小雨 🌧️", 71: "小雪 ❄️",
-            80: "陣雨 ⛈️", 95: "雷陣雨 ⚡"
+        # WMO Weather interpretation codes (WW)
+        self.weather_map = {
+            0: "☀️ 晴朗",
+            1: "🌤️ 大致天晴", 2: "⛅ 多雲", 3: "☁️ 陰天",
+            45: "🌫️ 有霧", 48: "🌫️ 霧淞",
+            51: "🌧️ 輕微毛毛雨", 53: "🌧️ 毛毛雨", 55: "🌧️ 密集毛毛雨",
+            61: "🌧️ 小雨", 63: "🌧️ 中雨", 65: "🌧️ 大雨",
+            71: "❄️ 小雪", 73: "❄️ 中雪", 75: "❄️ 大雪",
+            80: "🌦️ 陣雨", 81: "🌦️ 局部陣雨", 82: "🌦️ 激烈陣雨",
+            95: "⚡ 雷雨", 96: "⚡ 伴隨冰雹的雷雨", 99: "⚡ 強烈雷陣雨"
         }
-        return weather_codes.get(code, "未知天氣")
+
+    async def get_weather_info(self, city: str):
+        try:
+            encoded_city = urllib.parse.quote(city)
+            geo_url = f"https://nominatim.openstreetmap.org/search?q={encoded_city}&format=json&limit=1"
+            headers = {"User-Agent": "TravelBotDC/1.1"}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(geo_url, headers=headers) as resp:
+                    if resp.status != 200: return None
+                    geo_data = await resp.json()
+                    if not geo_data: return None
+                    lat, lon = geo_data[0]["lat"], geo_data[0]["lon"]
+                    display_name = geo_data[0]["display_name"].split(",")[0]
+
+                weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+                async with session.get(weather_url) as resp:
+                    if resp.status != 200: return None
+                    w_data = await resp.json()
+                    curr = w_data["current_weather"]
+                    
+                    # 獲取中文描述
+                    code = curr.get("weathercode", 0)
+                    condition = self.weather_map.get(code, "❓ 未知氣候")
+                    
+                    return {
+                        "city": display_name,
+                        "temp": curr["temperature"],
+                        "wind": curr["windspeed"],
+                        "condition": condition # 新增狀況
+                    }
+        except:
+            return None
 
     @app_commands.command(name="weather", description="查詢指定城市的天氣 (完美支援中文地名)")
-    @app_commands.describe(city="城市名稱 (例如: 台北, 東京, 大阪, 紐約)")
     async def weather(self, interaction: discord.Interaction, city: str):
         await interaction.response.defer()
-        
-        async with aiohttp.ClientSession() as session:
-            # Step 1: 使用 Nominatim (OpenStreetMap) 獲取經緯度 - 對中文支援最完整
-            geo_url = "https://nominatim.openstreetmap.org/search"
-            geo_params = {
-                "q": city,
-                "format": "json",
-                "limit": 1,
-                "addressdetails": 1,
-                "accept-language": "zh-TW" # 優先回傳繁體中文資訊
-            }
-            # Nominatim 要求必須設定 User-Agent
-            headers = {
-                "User-Agent": "TravelBotDC/1.0 (Contact: DiscordBotDev)"
-            }
-            
-            async with session.get(geo_url, params=geo_params, headers=headers) as resp:
-                print(f"DEBUG: 查詢城市 (Nominatim) = {city}")
-                print(f"DEBUG: 參數 (geo_params) = {geo_params}")
-                print(f"DEBUG: 最終請求 URL = {resp.url}")
-                
-                if resp.status != 200:
-                    await interaction.followup.send("❌ 無法連接到 Geocoding 服務（Nominatim）。")
-                    return
-                
-                results = await resp.json()
-                if not results:
-                    await interaction.followup.send(f"❌ 找不到地點 `{city}`，請嘗試更確切的名字。")
-                    return
-                
-                location = results[0]
-                lat, lon = location["lat"], location["lon"]
-                display_name = location.get("display_name", city)
-                # 簡化顯示名稱，通常 Nominatim 回傳很長，我們取前面兩段
-                display_parts = display_name.split(",")
-                short_name = ", ".join(display_parts[:2]).strip() if len(display_parts) > 1 else display_name
+        info = await self.get_weather_info(city)
+        if not info:
+            await interaction.followup.send(f"❌ 找不到城市 `{city}`。")
+            return
 
-            # Step 2: 使用經緯度從 Open-Meteo 獲取天氣 (維持不變)
-            weather_url = "https://api.open-meteo.com/v1/forecast"
-            weather_params = {
-                "latitude": lat,
-                "longitude": lon,
-                "current_weather": "true",
-                "timezone": "auto"
-            }
-            
-            async with session.get(weather_url, params=weather_params) as resp:
-                if resp.status == 200:
-                    weather_data = await resp.json()
-                    current = weather_data["current_weather"]
-                    temp = current["temperature"]
-                    code = current["weathercode"]
-                    desc = self.get_weather_desc(code)
-                    
-                    await interaction.followup.send(f"📍 **{short_name}**\n🌡️ 溫度: `{temp}°C`\n🌈 狀況: `{desc}`")
-                else:
-                    await interaction.followup.send("❌ 獲取天氣資料失敗。")
+        embed = discord.Embed(title=f"🌡️ 天氣預報：{info['city']}", color=discord.Color.blue())
+        embed.add_field(name="目前狀況", value=info["condition"], inline=False) # 顯示狀況
+        embed.add_field(name="現在溫度", value=f"{info['temp']}°C", inline=True)
+        embed.add_field(name="風速", value=f"{info['wind']} km/h", inline=True)
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Weather(bot))
