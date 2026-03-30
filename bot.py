@@ -28,6 +28,18 @@ class TravelBot(commands.Bot):
 
 bot = TravelBot()
 
+@bot.command()
+@commands.is_owner()
+async def sync(ctx):
+    print("正在將指令強制同步到此伺服器...")
+    # 將全域指令樹複製到當前伺服器中
+    bot.tree.copy_global_to(guild=ctx.guild)
+    # 同步該伺服器的指令樹
+    synced = await bot.tree.sync(guild=ctx.guild)
+    
+    print(f"成功同步了 {len(synced)} 個指令至伺服器：{ctx.guild.name}")
+    await ctx.send(f"✅ 指令已成功強制同步到此伺服器！(共 {len(synced)} 個)\n請按 `Ctrl + R` 或稍候片刻即可看到新指令。")
+
 @bot.event
 async def on_ready():
     print('---')
