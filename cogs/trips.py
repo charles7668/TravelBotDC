@@ -75,10 +75,43 @@ class ScheduleDetailButton(discord.ui.Button):
         
         await interaction.response.send_message(embed=embed, view=edit_view, ephemeral=True)
 
+class TripNoteEditModal(discord.ui.Modal):
+    def __init__(self, trip_item):
+        super().__init__(title=f"編輯旅程備註：{trip_item['name'][:20]}")
+        self.trip_item = trip_item
+        self.note_input = discord.ui.TextInput(
+            label="旅程整體備註 (支援 Markdown)",
+            style=discord.TextStyle.long,
+            placeholder="在此輸入這趟旅行的整體備註...",
+            default=trip_item.get("note") if trip_item.get("note") else "",
+            required=False, max_length=1000
+        )
+        self.add_item(self.note_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.trip_item["note"] = self.note_input.value
+        await interaction.response.send_message(
+            f"✅ {interaction.user.mention} 更新了旅程 **【{self.trip_item['name']}】** 的備註！"
+        )
+
+class TripNoteEditButton(discord.ui.Button):
+    def __init__(self, trip_item):
+        # 確保編輯按鈕在比較下面，以和各個行程的按紐做區隔
+        super().__init__(label="✍️ 編輯旅程備註", style=discord.ButtonStyle.primary, row=4)
+        self.trip_item = trip_item
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.trip_item.get("creator") and self.trip_item["creator"] != interaction.user.id:
+            await interaction.response.send_message("❌ 您非旅程建立者，無法編輯備註。", ephemeral=True); return
+        await interaction.response.send_modal(TripNoteEditModal(self.trip_item))
+
 class ScheduleListView(discord.ui.View):
-    def __init__(self, related_schedules, parent_cog):
+    def __init__(self, related_schedules, trip_item, parent_cog):
         super().__init__(timeout=180)
-        for s in related_schedules[:25]:
+        if trip_item:
+            self.add_item(TripNoteEditButton(trip_item))
+        max_schedules = 24 if trip_item else 25
+        for s in related_schedules[:max_schedules]:
             self.add_item(ScheduleDetailButton(s["id"], s["task"], parent_cog))
 
 class TravelPlanner(commands.Cog):
@@ -110,14 +143,26 @@ class TravelPlanner(commands.Cog):
 
     # --- 1. 基本指令 ---
     @app_commands.command(name="create_trip", description="建立大型旅程項目")
-    async def create_trip(self, interaction: discord.Interaction, name: str, start_date: str, end_date: str):
+    async def create_trip(self, interaction: discord.Interaction, name: str, start_date: str, end_date: str, note: str = None):
         try:
             start = datetime.strptime(start_date, "%Y-%m-%d").date()
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
-            self.all_trips.append({"name": name, "start": start, "end": end, "creator": interaction.user.id, "members": [interaction.user.id]})
+            self.all_trips.append({"name": name, "start": start, "end": end, "creator": interaction.user.id, "members": [interaction.user.id], "note": note})
             await interaction.response.send_message(f"🎒 **旅程核心已建立！**\n名稱：`{name}`")
         except ValueError:
             await interaction.response.send_message("❌ 格式錯誤。", ephemeral=True)
+
+    @app_commands.command(name="edit_trip", description="編輯旅程的備註")
+    @app_commands.autocomplete(name=trip_autocomplete)
+    async def edit_trip(self, interaction: discord.Interaction, name: str, new_note: str):
+        trip = next((t for t in self.all_trips if t["name"] == name), None)
+        if not trip:
+            await interaction.response.send_message("❌ 找不到該旅程。", ephemeral=True); return
+        if trip.get("creator") and trip["creator"] != interaction.user.id:
+            await interaction.response.send_message("❌ 您非旅程建立者，無法編輯備註。", ephemeral=True); return
+        
+        trip["note"] = new_note
+        await interaction.response.send_message(f"✅ {interaction.user.mention} 已成功更新旅程 **{name}** 的備註！")
 
     @app_commands.command(name="join_trip", description="加入旅程計畫")
     @app_commands.autocomplete(name=trip_autocomplete)
@@ -125,7 +170,7 @@ class TravelPlanner(commands.Cog):
         u_id = interaction.user.id
         trip = next((t for t in self.all_trips if t["name"] == name), None)
         if not trip:
-            trip = {"name": name, "start": None, "end": None, "creator": None, "members": []}
+            trip = {"name": name, "start": None, "end": None, "creator": None, "members": [], "note": None}
             self.all_trips.append(trip)
         if u_id not in trip["members"]:
             trip["members"].append(u_id)
@@ -217,7 +262,7 @@ class TravelPlanner(commands.Cog):
 
     @app_commands.command(name="view_trip", description="檢視旅程清單")
     @app_commands.autocomplete(name=trip_autocomplete)
-    async def view_trip(self, interaction: discord.Interaction, name: str = "未分組"):
+    async def view_trip(self, interaction: discord.Interaction, name: str):
         trip = next((t for t in self.all_trips if t["name"] == name), None)
         related = sorted([s for s in self.schedules if s["trip_name"] == name], key=lambda x: x["datetime"])
         if not trip and not related:
@@ -226,11 +271,26 @@ class TravelPlanner(commands.Cog):
         if trip and trip["members"]:
             m_list = ", ".join([f"<@{uid}>" for uid in trip["members"]])
             embed.add_field(name="👥 行程夥伴", value=m_list, inline=False)
+            
+        if trip and trip.get("note"):
+            embed.add_field(name="📝 旅程備註", value=trip["note"], inline=False)
+
         t_fmt = lambda s: s['datetime'].strftime('%m/%d %H:%M' if s['has_time'] else '%m/%d')
-        lines = [f"🔹 `{t_fmt(s)}` - **{s['task']}**" for s in related]
+        lines = []
+        for s in related:
+            line = f"🔹 `{t_fmt(s)}` - **{s['task']}**"
+            if s.get("description"):
+                desc = s['description'].replace('\n', ' ')
+                if len(desc) > 20: desc = desc[:20] + "..."
+                line += f" *(備註: {desc})*"
+            lines.append(line)
         embed.description = "\n".join(lines) if lines else "目前尚未規劃任何行程。"
-        view = ScheduleListView(related, self) if related else None
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        
+        if related or trip:
+            view = ScheduleListView(related, trip, self)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="list_trips", description="列出計畫清單")
     async def list_trips(self, interaction: discord.Interaction):
@@ -240,7 +300,8 @@ class TravelPlanner(commands.Cog):
         embed = discord.Embed(title="✈️ 旅程預覽", color=discord.Color.blue())
         for t in self.all_trips:
             period = f"`{t['start']}` 到 `{t['end']}`" if t["start"] else "日期未定"
-            embed.add_field(name=f"📌 {t['name']}", value=f"📅 {period}\n👥 {len(t['members'])} 人", inline=False)
+            note_str = f"\n📝 備註: {t['note'][:20]}..." if t.get("note") else ""
+            embed.add_field(name=f"📌 {t['name']}", value=f"📅 {period}\n👥 {len(t['members'])} 人{note_str}", inline=False)
         has_uncat = any(s["trip_name"] == "未分組" and s["user_id"] == u_id for s in self.schedules)
         if has_uncat: embed.add_field(name="📂 其他分組", value="`未分組`", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
