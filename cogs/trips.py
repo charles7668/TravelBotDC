@@ -94,21 +94,39 @@ class ScheduleDetailButton(discord.ui.Button):
         if not s:
             await interaction.response.send_message("❌ 行程資料不存在。", ephemeral=True); return
 
-        embed = discord.Embed(title=f"📝 行程筆記：{s['task']}", color=discord.Color.orange())
-        embed.add_field(name="所屬旅程", value=s["trip_name"], inline=True)
         t_fmt = '%Y-%m-%d %H:%M' if s['has_time'] else '%Y-%m-%d'
-        embed.add_field(name="日期時間", value=s["datetime"].strftime(t_fmt), inline=True)
-        if s["location"]: embed.add_field(name="地點", value=s["location"], inline=True)
-        if s["reminder_message"]: embed.add_field(name="🔔 提醒訊息", value=s["reminder_message"], inline=False)
-        embed.add_field(name="📜 詳細描述 / 備註", value=s["description"] if s["description"] else "無筆記", inline=False)
+        is_url = s["location"] and (s["location"].startswith("http://") or s["location"].startswith("https://"))
         
+        # 組裝純文字訊息內容
+        msg = f"📝 **行程詳情：{s['task']}**\n"
+        msg += f"━━━━━━━━━━━━━━━━━━\n"
+        msg += f"📁 **所屬旅程**：{s['trip_name']}\n"
+        msg += f"📅 **日期時間**：{s['datetime'].strftime(t_fmt)}\n"
+        
+        if s["location"]:
+            loc_val = f"<{s['location']}>" if is_url else s["location"]
+            msg += f"📍 **地點**：{loc_val}\n"
+            
+        if s["reminder_message"]:
+            msg += f"\n🔔 **提醒訊息**：\n> {s['reminder_message'].replace('\n', '\n> ')}\n"
+            
+        msg += f"\n📜 **詳細描述 / 備註**：\n{s['description'] if s['description'] else '無筆記'}\n"
+        
+        # 如果是網址，在最後一行單獨貼出網址以確保預覽
+        if is_url:
+            msg += f"\n📍 **地圖預覽**：\n{s['location']}"
+
         edit_view = discord.ui.View()
-        edit_btn = discord.ui.Button(label="✍️ 編輯筆記", style=discord.ButtonStyle.primary)
+        edit_btn = discord.ui.Button(label="✍️ 編輯行程", style=discord.ButtonStyle.primary)
         async def edit_callback(btn_inter: discord.Interaction): await btn_inter.response.send_modal(DescriptionEditModal(dict(s), self.cog))
         edit_btn.callback = edit_callback
         edit_view.add_item(edit_btn)
+
+        if is_url:
+            map_btn = discord.ui.Button(label="🗺️ 在 Google Maps 中開啟", url=s["location"])
+            edit_view.add_item(map_btn)
         
-        await interaction.response.send_message(embed=embed, view=edit_view, ephemeral=True)
+        await interaction.response.send_message(content=msg, view=edit_view, ephemeral=False)
 
 class TripNoteEditModal(discord.ui.Modal):
     def __init__(self, trip_item, cog):
@@ -235,7 +253,7 @@ class TravelPlanner(commands.Cog):
         time_str="輸入日期時間。格式：YYYY-MM-DD 或 YYYY-MM-DD HH:MM (例如：2024-05-20 14:30)",
         task="行程名稱 (例如：搭乘飛機、前往飯店)",
         trip_name="所屬旅程名稱 (選填，可留空或選「未分組」)",
-        location="地點名稱 (選填，若輸入且為當日行程會顯示天氣)",
+        location="地點名稱或 Google Map 連結 (選填，若輸入名稱且為當日行程會顯示天氣)",
         description="詳細描述或筆記 (選填)",
         reminder_message="出發前要提醒的訊息，支援 Markdown (選填)"
     )
@@ -262,10 +280,12 @@ class TravelPlanner(commands.Cog):
             
             w_str = ""
             if dt.date() == datetime.now().date() and location:
-                wc = self.bot.get_cog("Weather")
-                if wc:
-                    info = await wc.get_weather_info(location)
-                    if info: w_str = f" | 🌡️ **即時天氣：{info['condition']} {info['temp']}°C**"
+                is_url = location.startswith("http://") or location.startswith("https://")
+                if not is_url:
+                    wc = self.bot.get_cog("Weather")
+                    if wc:
+                        info = await wc.get_weather_info(location)
+                        if info: w_str = f" | 🌡️ **即時天氣：{info['condition']} {info['temp']}°C**"
 
             await interaction.followup.send(f"📅 已鎖定：`{time_str}` - **{task}** (分組：`{final_t_name}`){w_str}")
         except Exception as e:
@@ -273,6 +293,12 @@ class TravelPlanner(commands.Cog):
 
     # --- 3. 識別 ID 查詢與編輯 ---
     @app_commands.command(name="edit_schedule", description="編輯行程基本內容")
+    @app_commands.describe(
+        full_task_id="選擇要編輯的行程",
+        new_task="更新行程名稱 (選填)",
+        new_location="更新地點或 Google Map 連結 (選填)",
+        new_reminder_message="更新提醒訊息 (選填)"
+    )
     @app_commands.autocomplete(full_task_id=schedule_autocomplete)
     async def edit_schedule(self, interaction: discord.Interaction, full_task_id: str, new_task: str = None, new_location: str = None, new_reminder_message: str = None):
         u_id = interaction.user.id
