@@ -40,6 +40,7 @@ class TravelBot(commands.Bot):
                     trip_name VARCHAR,
                     location VARCHAR,
                     description TEXT,
+                    reminder_message TEXT,
                     user_id BIGINT,
                     channel_id BIGINT,
                     notified_3d BOOLEAN DEFAULT FALSE,

@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, time
 import uuid
+import os
 
 # --- 新增：刪除確認 View ---
 class DeleteConfirmView(discord.ui.View):
@@ -28,9 +29,22 @@ class DeleteConfirmView(discord.ui.View):
 # --- 新增：多行描述編輯彈窗 ---
 class DescriptionEditModal(discord.ui.Modal):
     def __init__(self, schedule_item, cog):
-        super().__init__(title=f"編輯行程筆記：{schedule_item['task'][:20]}")
+        super().__init__(title=f"編輯行程：{schedule_item['task'][:20]}")
         self.schedule_item = schedule_item
         self.cog = cog
+        
+        self.task_input = discord.ui.TextInput(
+            label="行程名稱",
+            style=discord.TextStyle.short,
+            default=schedule_item["task"],
+            required=True, max_length=100
+        )
+        self.location_input = discord.ui.TextInput(
+            label="地點",
+            style=discord.TextStyle.short,
+            default=schedule_item["location"] if schedule_item["location"] else "",
+            required=False, max_length=100
+        )
         self.desc_input = discord.ui.TextInput(
             label="行程詳細描述 (支援 Markdown)",
             style=discord.TextStyle.long,
@@ -38,15 +52,33 @@ class DescriptionEditModal(discord.ui.Modal):
             default=schedule_item["description"] if schedule_item["description"] else "",
             required=False, max_length=1000
         )
+        self.remind_input = discord.ui.TextInput(
+            label="提醒訊息內容 (支援 Markdown)",
+            style=discord.TextStyle.long,
+            placeholder="例如：\n- 記得帶護照\n- 穿厚外套\n- [參考連結](https://...)",
+            default=schedule_item["reminder_message"] if schedule_item["reminder_message"] else "",
+            required=False, max_length=500
+        )
+        
+        self.add_item(self.task_input)
+        self.add_item(self.location_input)
         self.add_item(self.desc_input)
+        self.add_item(self.remind_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        new_task = self.task_input.value
+        new_loc = self.location_input.value
         new_desc = self.desc_input.value
+        new_remind = self.remind_input.value
+        
         async with self.cog.bot.db_pool.acquire() as conn:
-            await conn.execute("UPDATE schedules SET description = $1 WHERE id = $2", new_desc, self.schedule_item["id"])
+            await conn.execute(
+                "UPDATE schedules SET task = $1, location = $2, description = $3, reminder_message = $4 WHERE id = $5", 
+                new_task, new_loc, new_desc, new_remind, self.schedule_item["id"]
+            )
             
         await interaction.response.send_message(
-            f"📝 {interaction.user.mention} 更新了旅程 **【{self.schedule_item['trip_name']}】** 的詳細筆記：\n> 行程：**{self.schedule_item['task']}**"
+            f"📝 {interaction.user.mention} 已全面更新旅程 **【{self.schedule_item['trip_name']}】** 的行程資料：\n> **{new_task}** @ {new_loc if new_loc else '未定'}"
         )
 
 # --- UI 組件：詳細資料按鈕 ---
@@ -67,6 +99,7 @@ class ScheduleDetailButton(discord.ui.Button):
         t_fmt = '%Y-%m-%d %H:%M' if s['has_time'] else '%Y-%m-%d'
         embed.add_field(name="日期時間", value=s["datetime"].strftime(t_fmt), inline=True)
         if s["location"]: embed.add_field(name="地點", value=s["location"], inline=True)
+        if s["reminder_message"]: embed.add_field(name="🔔 提醒訊息", value=s["reminder_message"], inline=False)
         embed.add_field(name="📜 詳細描述 / 備註", value=s["description"] if s["description"] else "無筆記", inline=False)
         
         edit_view = discord.ui.View()
@@ -198,8 +231,16 @@ class TravelPlanner(commands.Cog):
 
     # --- 2. 行程設定 ---
     @app_commands.command(name="schedule", description="排定行程")
+    @app_commands.describe(
+        time_str="輸入日期時間。格式：YYYY-MM-DD 或 YYYY-MM-DD HH:MM (例如：2024-05-20 14:30)",
+        task="行程名稱 (例如：搭乘飛機、前往飯店)",
+        trip_name="所屬旅程名稱 (選填，可留空或選「未分組」)",
+        location="地點名稱 (選填，若輸入且為當日行程會顯示天氣)",
+        description="詳細描述或筆記 (選填)",
+        reminder_message="出發前要提醒的訊息，支援 Markdown (選填)"
+    )
     @app_commands.autocomplete(trip_name=trip_autocomplete)
-    async def schedule(self, interaction: discord.Interaction, time_str: str, task: str, trip_name: str = None, location: str = None, description: str = None):
+    async def schedule(self, interaction: discord.Interaction, time_str: str, task: str, trip_name: str = None, location: str = None, description: str = None, reminder_message: str = None):
         await interaction.response.defer()
         try:
             try:
@@ -215,8 +256,8 @@ class TravelPlanner(commands.Cog):
             
             async with self.bot.db_pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO schedules (id, datetime, has_time, task, trip_name, location, description, user_id, channel_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                    s_id, dt, has_time, task, final_t_name, location, description, interaction.user.id, interaction.channel_id
+                    "INSERT INTO schedules (id, datetime, has_time, task, trip_name, location, description, reminder_message, user_id, channel_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    s_id, dt, has_time, task, final_t_name, location, description, reminder_message, interaction.user.id, interaction.channel_id
                 )
             
             w_str = ""
@@ -233,7 +274,7 @@ class TravelPlanner(commands.Cog):
     # --- 3. 識別 ID 查詢與編輯 ---
     @app_commands.command(name="edit_schedule", description="編輯行程基本內容")
     @app_commands.autocomplete(full_task_id=schedule_autocomplete)
-    async def edit_schedule(self, interaction: discord.Interaction, full_task_id: str, new_task: str = None, new_location: str = None):
+    async def edit_schedule(self, interaction: discord.Interaction, full_task_id: str, new_task: str = None, new_location: str = None, new_reminder_message: str = None):
         u_id = interaction.user.id
         async with self.bot.db_pool.acquire() as conn:
             target = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1 AND user_id = $2", full_task_id, u_id)
@@ -254,6 +295,11 @@ class TravelPlanner(commands.Cog):
                 changes.append(f"📍 把地點從 `{old_loc}` 更新成了 `{new_location}`")
                 updates.append(f"location = ${arg_id}")
                 args.append(new_location)
+                arg_id += 1
+            if new_reminder_message and target["reminder_message"] != new_reminder_message:
+                changes.append(f"🔔 更新了提醒訊息內容")
+                updates.append(f"reminder_message = ${arg_id}")
+                args.append(new_reminder_message)
                 arg_id += 1
             
             if updates:
@@ -353,6 +399,23 @@ class TravelPlanner(commands.Cog):
             
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # --- 測試專用指令 (測試完可刪除) ---
+    if os.getenv('TRAVEL_BOT_TEST') == 'true':
+        @app_commands.command(name="test_notification", description="[開發測試] 立即觸發指定行程的提醒通知")
+        @app_commands.autocomplete(full_task_id=schedule_autocomplete)
+        async def test_notification(self, interaction: discord.Interaction, full_task_id: str, simulate_days_left: int = 0):
+            async with self.bot.db_pool.acquire() as conn:
+                s = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1", full_task_id)
+            
+            if not s:
+                await interaction.response.send_message("❌ 找不到行程資料。", ephemeral=True); return
+            
+            from datetime import timedelta
+            mock_today = s["datetime"].date() - timedelta(days=simulate_days_left)
+            
+            await interaction.response.send_message(f"🧪 正在模擬 {simulate_days_left} 天前的提醒發送...", ephemeral=True)
+            await self._process_daily_notification(dict(s), mock_today)
+
     # --- 背景服務與提醒 ---
     @tasks.loop(time=time(hour=0, minute=0))
     async def check_future_schedules(self):
@@ -375,18 +438,19 @@ class TravelPlanner(commands.Cog):
         if not chan: return
         pf = f"【{s['trip_name']}】" if s['trip_name'] else ""
         m_str = await self._get_mention_string(s)
+        remind_msg = f"\n\n💡 **提醒訊息：**\n> {s['reminder_message']}" if s.get('reminder_message') else ""
         
         if days_left == 0:
             w_info = await self._get_forecast_weather(s)
-            await chan.send(f"🚩 {m_str} 今日：{pf} **{s['task']}**{w_info}")
+            await chan.send(f"🚩 {m_str} 今日：{pf} **{s['task']}**{w_info}{remind_msg}")
             async with self.bot.db_pool.acquire() as conn:
                 await conn.execute("DELETE FROM schedules WHERE id = $1", s["id"])
         elif days_left == 3 and not s["notified_3d"]: 
-            await chan.send(f"🔔 {m_str} 預告：{pf} **{s['task']}** 還有 3 天！")
+            await chan.send(f"🔔 {m_str} 預告：{pf} **{s['task']}** 還有 3 天！{remind_msg}")
             async with self.bot.db_pool.acquire() as conn:
                 await conn.execute("UPDATE schedules SET notified_3d = TRUE WHERE id = $1", s["id"])
         elif days_left == 1 and not s["notified_1d"]: 
-            await chan.send(f"⚠️ {m_str} 強調：{pf} **{s['task']}** 就在明天！")
+            await chan.send(f"⚠️ {m_str} 強調：{pf} **{s['task']}** 就在明天！{remind_msg}")
             async with self.bot.db_pool.acquire() as conn:
                 await conn.execute("UPDATE schedules SET notified_1d = TRUE WHERE id = $1", s["id"])
 
