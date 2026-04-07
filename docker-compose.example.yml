@@ -1,18 +1,30 @@
-name: travelbot-group
-
 services:
   postgres:
-    image: postgres:17.9-alpine3.23
+    image: postgres:17-alpine
     container_name: travelbot-db
     restart: always
+    # 讓 postgres 容器也讀取 .env 檔案中的環境變數
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: your_username
-      POSTGRES_PASSWORD: your_password
-      POSTGRES_DB: travelbot
-    ports:
-      - "5432:5432"
+      # 如果 .env 沒定義，則使用預設值
+      POSTGRES_USER: ${POSTGRES_USER:-bot_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bot_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-travelbot}
     volumes:
       - travelbot_pgdata:/var/lib/postgresql/data
+
+  bot:
+    image: travelbotdc
+    container_name: travelbot-bot
+    restart: always
+    depends_on:
+      - postgres
+    env_file:
+      - .env
+    environment:
+      # 機器人連線資訊會優先使用 .env 中的變數，否則使用預設值
+      - DATABASE_URL=postgres://${POSTGRES_USER:-bot_user}:${POSTGRES_PASSWORD:-bot_pass}@postgres:5432/${POSTGRES_DB:-travelbot}
 
 volumes:
   travelbot_pgdata:
