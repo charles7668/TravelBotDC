@@ -447,7 +447,7 @@ class TravelPlanner(commands.Cog):
             mock_today = s["datetime"].date() - timedelta(days=simulate_days_left)
             
             await interaction.response.send_message(f"🧪 正在模擬 {simulate_days_left} 天前的提醒發送...", ephemeral=True)
-            await self._process_daily_notification(dict(s), mock_today, is_simulation=True)
+            await self._process_daily_notification(dict(s), mock_today, is_simulation=True, interaction=interaction)
 
     # --- 背景服務與提醒 ---
     @tasks.loop(time=time(hour=0, minute=0))
@@ -459,7 +459,7 @@ class TravelPlanner(commands.Cog):
             for s in schedules:
                 await self._process_daily_notification(s, today)
 
-    async def _process_daily_notification(self, s, today, is_simulation=False):
+    async def _process_daily_notification(self, s, today, is_simulation=False, interaction: discord.Interaction = None):
         target_date = s["datetime"].date()
         days_left = (target_date - today).days
         if days_left < 0:
@@ -468,25 +468,32 @@ class TravelPlanner(commands.Cog):
                     await conn.execute("DELETE FROM schedules WHERE id = $1", s["id"])
             return
             
-        chan = self.bot.get_channel(s["channel_id"])
-        if not chan: return
         pf = f"【{s['trip_name']}】" if s['trip_name'] else ""
         m_str = await self._get_mention_string(s)
         remind_msg = f"\n\n💡 **提醒訊息：**\n> {s['reminder_message']}" if s.get('reminder_message') else ""
+
+        async def send_notification(content):
+            if interaction:
+                # 測試模式下，使用 ephemeral 訊息僅讓使用者看到
+                await interaction.followup.send(content, ephemeral=True)
+            else:
+                chan = self.bot.get_channel(s["channel_id"])
+                if chan:
+                    await chan.send(content)
         
         if days_left == 0:
             w_info = await self._get_forecast_weather(s)
-            await chan.send(f"🚩 {m_str} 今日：{pf} **{s['task']}**{w_info}{remind_msg}")
+            await send_notification(f"🚩 {m_str} 今日：{pf} **{s['task']}**{w_info}{remind_msg}")
             if not is_simulation:
                 async with self.bot.db_pool.acquire() as conn:
                     await conn.execute("DELETE FROM schedules WHERE id = $1", s["id"])
         elif days_left == 3 and (not s["notified_3d"] or is_simulation): 
-            await chan.send(f"🔔 {m_str} 預告：{pf} **{s['task']}** 還有 3 天！{remind_msg}")
+            await send_notification(f"🔔 {m_str} 預告：{pf} **{s['task']}** 還有 3 天！{remind_msg}")
             if not is_simulation:
                 async with self.bot.db_pool.acquire() as conn:
                     await conn.execute("UPDATE schedules SET notified_3d = TRUE WHERE id = $1", s["id"])
         elif days_left == 1 and (not s["notified_1d"] or is_simulation): 
-            await chan.send(f"⚠️ {m_str} 強調：{pf} **{s['task']}** 就在明天！{remind_msg}")
+            await send_notification(f"⚠️ {m_str} 強調：{pf} **{s['task']}** 就在明天！{remind_msg}")
             if not is_simulation:
                 async with self.bot.db_pool.acquire() as conn:
                     await conn.execute("UPDATE schedules SET notified_1d = TRUE WHERE id = $1", s["id"])
@@ -504,7 +511,8 @@ class TravelPlanner(commands.Cog):
             wc = self.bot.get_cog("Weather")
             if wc:
                 info = await wc.get_weather_info(s["location"])
-                if info: return f" | 📍 測報：{info['condition']} {info['temp']}°C"
+                if info: 
+                    return f" | 📍 {info['city']}：{info['condition']}，氣溫 {info['temp']}°C，風速 {info['wind']} km/h"
         return ""
 
 async def setup(bot):
