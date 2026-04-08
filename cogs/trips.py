@@ -440,7 +440,7 @@ class TravelPlanner(commands.Cog):
             mock_today = s["datetime"].date() - timedelta(days=simulate_days_left)
             
             await interaction.response.send_message(f"🧪 正在模擬 {simulate_days_left} 天前的提醒發送...", ephemeral=True)
-            await self._process_daily_notification(dict(s), mock_today)
+            await self._process_daily_notification(dict(s), mock_today, is_simulation=True)
 
     # --- 背景服務與提醒 ---
     @tasks.loop(time=time(hour=0, minute=0))
@@ -452,12 +452,13 @@ class TravelPlanner(commands.Cog):
             for s in schedules:
                 await self._process_daily_notification(s, today)
 
-    async def _process_daily_notification(self, s, today):
+    async def _process_daily_notification(self, s, today, is_simulation=False):
         target_date = s["datetime"].date()
         days_left = (target_date - today).days
         if days_left < 0:
-            async with self.bot.db_pool.acquire() as conn:
-                await conn.execute("DELETE FROM schedules WHERE id = $1", s["id"])
+            if not is_simulation:
+                async with self.bot.db_pool.acquire() as conn:
+                    await conn.execute("DELETE FROM schedules WHERE id = $1", s["id"])
             return
             
         chan = self.bot.get_channel(s["channel_id"])
@@ -469,16 +470,19 @@ class TravelPlanner(commands.Cog):
         if days_left == 0:
             w_info = await self._get_forecast_weather(s)
             await chan.send(f"🚩 {m_str} 今日：{pf} **{s['task']}**{w_info}{remind_msg}")
-            async with self.bot.db_pool.acquire() as conn:
-                await conn.execute("DELETE FROM schedules WHERE id = $1", s["id"])
-        elif days_left == 3 and not s["notified_3d"]: 
+            if not is_simulation:
+                async with self.bot.db_pool.acquire() as conn:
+                    await conn.execute("DELETE FROM schedules WHERE id = $1", s["id"])
+        elif days_left == 3 and (not s["notified_3d"] or is_simulation): 
             await chan.send(f"🔔 {m_str} 預告：{pf} **{s['task']}** 還有 3 天！{remind_msg}")
-            async with self.bot.db_pool.acquire() as conn:
-                await conn.execute("UPDATE schedules SET notified_3d = TRUE WHERE id = $1", s["id"])
-        elif days_left == 1 and not s["notified_1d"]: 
+            if not is_simulation:
+                async with self.bot.db_pool.acquire() as conn:
+                    await conn.execute("UPDATE schedules SET notified_3d = TRUE WHERE id = $1", s["id"])
+        elif days_left == 1 and (not s["notified_1d"] or is_simulation): 
             await chan.send(f"⚠️ {m_str} 強調：{pf} **{s['task']}** 就在明天！{remind_msg}")
-            async with self.bot.db_pool.acquire() as conn:
-                await conn.execute("UPDATE schedules SET notified_1d = TRUE WHERE id = $1", s["id"])
+            if not is_simulation:
+                async with self.bot.db_pool.acquire() as conn:
+                    await conn.execute("UPDATE schedules SET notified_1d = TRUE WHERE id = $1", s["id"])
 
     async def _get_mention_string(self, s):
         m_set = {s["user_id"]}
