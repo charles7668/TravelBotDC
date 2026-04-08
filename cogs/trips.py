@@ -273,6 +273,13 @@ class TravelPlanner(commands.Cog):
             final_t_name = trip_name if trip_name else "未分組"
             
             async with self.bot.db_pool.acquire() as conn:
+                # 驗證旅程是否存在 (排除 "未分組")
+                if final_t_name != "未分組":
+                    trip_exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM trips WHERE name = $1)", final_t_name)
+                    if not trip_exists:
+                        await interaction.followup.send(f"❌ 找不到旅程：`{final_t_name}`。請確認名稱是否正確，或先使用 `/create_trip` 建立旅程。")
+                        return
+
                 await conn.execute(
                     "INSERT INTO schedules (id, datetime, has_time, task, trip_name, location, description, reminder_message, user_id, channel_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                     s_id, dt, has_time, task, final_t_name, location, description, reminder_message, interaction.user.id, interaction.channel_id
