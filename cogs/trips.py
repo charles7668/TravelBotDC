@@ -126,7 +126,7 @@ class ScheduleDetailButton(discord.ui.Button):
             map_btn = discord.ui.Button(label="🗺️ 在 Google Maps 中開啟", url=s["location"])
             edit_view.add_item(map_btn)
         
-        await interaction.response.send_message(content=msg, view=edit_view, ephemeral=False)
+        await interaction.response.send_message(content=msg, view=edit_view, ephemeral=True)
 
 class TripNoteEditModal(discord.ui.Modal):
     def __init__(self, trip_item, cog):
