@@ -59,6 +59,34 @@ class Weather(commands.Cog):
             print(f"[DEBUG] Extraction error: {e}")
             return None
 
+    async def _reverse_geocode(self, lat: float, lon: float):
+        """根據經緯度查詢地名 (反向地理編碼)."""
+        print(f"[DEBUG] Reverse geocoding for: {lat}, {lon}")
+        timeout = aiohttp.ClientTimeout(total=5)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                rev_geo_url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=10"
+                headers = {"User-Agent": "TravelBotDC/1.1"}
+                async with session.get(rev_geo_url, headers=headers) as resp:
+                    if resp.status != 200:
+                        print(f"[DEBUG] Nominatim reverse API error: {resp.status}")
+                        return None
+                    rev_geo_data = await resp.json()
+                    if rev_geo_data and "display_name" in rev_geo_data:
+                        # 嘗試提取更簡潔的城市名稱
+                        display_name_full = rev_geo_data["display_name"]
+                        parts = display_name_full.split(',')
+                        if len(parts) > 1:
+                            return parts[0].strip() # 通常第一個部分是城市名或主要地點
+                        return display_name_full
+                    return None
+        except aiohttp.ClientConnectorError as e:
+            print(f"[DEBUG] Network connection error during reverse geocoding: {e}")
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Reverse geocoding error: {e}")
+            return None
+
     async def get_weather_info(self, location_input: str):
         """根據地名或 Google Maps 網址獲取天氣資訊。"""
         print(f"[DEBUG] Processing weather info for: {location_input}")
@@ -75,7 +103,14 @@ class Weather(commands.Cog):
                 coords = await self._extract_coords_from_url(location_input)
                 if coords:
                     lat, lon = coords
-                    display_name = "地圖指定位置"
+                    # 進行反向地理編碼以獲取城市名稱
+                    city_name_from_coords = await self._reverse_geocode(lat, lon)
+                    if city_name_from_coords:
+                        display_name = city_name_from_coords
+                        print(f"[DEBUG] Reverse geocoded city name: {display_name}")
+                    else:
+                        display_name = "地圖指定位置" # 如果反查失敗，則使用預設值
+                        print(f"[DEBUG] Failed to reverse geocode, using default: {display_name}")
                     print(f"[DEBUG] Coordinates extracted from URL: {lat}, {lon}")
                 else:
                     print(f"[DEBUG] Failed to extract coordinates from URL.")
