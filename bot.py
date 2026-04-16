@@ -17,41 +17,64 @@ class TravelBot(commands.Bot):
 
     async def init_db(self):
         async with self.db_pool.acquire() as conn:
+            # 建立版本控制表
             await conn.execute('''
-                CREATE TABLE IF NOT EXISTS trips (
-                    guild_id BIGINT,
-                    name VARCHAR,
-                    start_date DATE,
-                    end_date DATE,
-                    creator BIGINT,
-                    note TEXT,
-                    PRIMARY KEY (guild_id, name)
-                );
-                
-                CREATE TABLE IF NOT EXISTS trip_members (
-                    guild_id BIGINT,
-                    trip_name VARCHAR,
-                    user_id BIGINT,
-                    PRIMARY KEY (guild_id, trip_name, user_id),
-                    FOREIGN KEY (guild_id, trip_name) REFERENCES trips(guild_id, name) ON DELETE CASCADE
-                );
-                
-                CREATE TABLE IF NOT EXISTS schedules (
-                    id VARCHAR PRIMARY KEY,
-                    guild_id BIGINT,
-                    datetime TIMESTAMP,
-                    has_time BOOLEAN,
-                    task VARCHAR,
-                    trip_name VARCHAR,
-                    location VARCHAR,
-                    description TEXT,
-                    reminder_message TEXT,
-                    user_id BIGINT,
-                    channel_id BIGINT,
-                    notified_3d BOOLEAN DEFAULT FALSE,
-                    notified_1d BOOLEAN DEFAULT FALSE
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY
                 );
             ''')
+            
+            # 取得當前版本
+            version = await conn.fetchval("SELECT version FROM schema_version")
+            if version is None:
+                # 初始版本 (目前已經是 V1 結構)
+                print("🐣 正在進行資料庫初始安裝 (V1)...")
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS trips (
+                        guild_id BIGINT,
+                        name VARCHAR,
+                        start_date DATE,
+                        end_date DATE,
+                        creator BIGINT,
+                        note TEXT,
+                        PRIMARY KEY (guild_id, name)
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS trip_members (
+                        guild_id BIGINT,
+                        trip_name VARCHAR,
+                        user_id BIGINT,
+                        PRIMARY KEY (guild_id, trip_name, user_id),
+                        FOREIGN KEY (guild_id, trip_name) REFERENCES trips(guild_id, name) ON DELETE CASCADE
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS schedules (
+                        id VARCHAR PRIMARY KEY,
+                        guild_id BIGINT,
+                        datetime TIMESTAMP,
+                        has_time BOOLEAN,
+                        task VARCHAR,
+                        trip_name VARCHAR,
+                        location VARCHAR,
+                        description TEXT,
+                        reminder_message TEXT,
+                        user_id BIGINT,
+                        channel_id BIGINT,
+                        notified_3d BOOLEAN DEFAULT FALSE,
+                        notified_1d BOOLEAN DEFAULT FALSE
+                    );
+                    
+                    INSERT INTO schema_version (version) VALUES (1);
+                ''')
+                version = 1
+
+            # 在這裡添加未來的升級邏輯 (例如 V2, V3...)
+            # if version < 2:
+            #     print("🆙 正在升級資料庫至 V2...")
+            #     await conn.execute("ALTER TABLE trips ADD COLUMN ...")
+            #     await conn.execute("UPDATE schema_version SET version = 2")
+            #     version = 2
+
 
     async def setup_hook(self):
         # 建立資料庫連線池
