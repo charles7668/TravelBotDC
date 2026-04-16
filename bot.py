@@ -19,21 +19,26 @@ class TravelBot(commands.Bot):
         async with self.db_pool.acquire() as conn:
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS trips (
-                    name VARCHAR PRIMARY KEY,
+                    guild_id BIGINT,
+                    name VARCHAR,
                     start_date DATE,
                     end_date DATE,
                     creator BIGINT,
-                    note TEXT
+                    note TEXT,
+                    PRIMARY KEY (guild_id, name)
                 );
                 
                 CREATE TABLE IF NOT EXISTS trip_members (
-                    trip_name VARCHAR REFERENCES trips(name) ON DELETE CASCADE,
+                    guild_id BIGINT,
+                    trip_name VARCHAR,
                     user_id BIGINT,
-                    PRIMARY KEY (trip_name, user_id)
+                    PRIMARY KEY (guild_id, trip_name, user_id),
+                    FOREIGN KEY (guild_id, trip_name) REFERENCES trips(guild_id, name) ON DELETE CASCADE
                 );
                 
                 CREATE TABLE IF NOT EXISTS schedules (
                     id VARCHAR PRIMARY KEY,
+                    guild_id BIGINT,
                     datetime TIMESTAMP,
                     has_time BOOLEAN,
                     task VARCHAR,

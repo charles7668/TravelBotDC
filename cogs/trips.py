@@ -73,8 +73,8 @@ class DescriptionEditModal(discord.ui.Modal):
         
         async with self.cog.bot.db_pool.acquire() as conn:
             await conn.execute(
-                "UPDATE schedules SET task = $1, location = $2, description = $3, reminder_message = $4 WHERE id = $5", 
-                new_task, new_loc, new_desc, new_remind, self.schedule_item["id"]
+                "UPDATE schedules SET task = $1, location = $2, description = $3, reminder_message = $4 WHERE id = $5 AND guild_id = $6", 
+                new_task, new_loc, new_desc, new_remind, self.schedule_item["id"], interaction.guild_id
             )
             
         await interaction.response.send_message(
@@ -145,7 +145,7 @@ class TripNoteEditModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         new_note = self.note_input.value
         async with self.cog.bot.db_pool.acquire() as conn:
-            await conn.execute("UPDATE trips SET note = $1 WHERE name = $2", new_note, self.trip_item['name'])
+            await conn.execute("UPDATE trips SET note = $1 WHERE guild_id = $2 AND name = $3", new_note, interaction.guild_id, self.trip_item['name'])
             
         await interaction.response.send_message(
             f"✅ {interaction.user.mention} 更新了旅程 **【{self.trip_item['name']}】** 的備註！"
@@ -184,7 +184,7 @@ class TravelPlanner(commands.Cog):
     async def trip_autocomplete(self, interaction: discord.Interaction, current: str):
         if not self.bot.db_pool: return []
         async with self.bot.db_pool.acquire() as conn:
-            records = await conn.fetch("SELECT name FROM trips")
+            records = await conn.fetch("SELECT name FROM trips WHERE guild_id = $1", interaction.guild_id)
         formal = [r['name'] for r in records]
         all_options = list(set(formal) | {"未分組"})
         return [app_commands.Choice(name=t, value=t) for t in all_options if current.lower() in t.lower()][:25]
@@ -193,7 +193,7 @@ class TravelPlanner(commands.Cog):
         if not self.bot.db_pool: return []
         u_id = interaction.user.id
         async with self.bot.db_pool.acquire() as conn:
-            schedules = await conn.fetch("SELECT id, trip_name, task, datetime, has_time FROM schedules WHERE user_id = $1", u_id)
+            schedules = await conn.fetch("SELECT id, trip_name, task, datetime, has_time FROM schedules WHERE user_id = $1 AND guild_id = $2", u_id, interaction.guild_id)
         choices = []
         for s in schedules:
             t_fmt = "%m/%d" if not s["has_time"] else "%m/%d %H:%M"
@@ -210,8 +210,8 @@ class TravelPlanner(commands.Cog):
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
             async with self.bot.db_pool.acquire() as conn:
                 try:
-                    await conn.execute("INSERT INTO trips (name, start_date, end_date, creator, note) VALUES ($1, $2, $3, $4, $5)", name, start, end, interaction.user.id, note)
-                    await conn.execute("INSERT INTO trip_members (trip_name, user_id) VALUES ($1, $2)", name, interaction.user.id)
+                    await conn.execute("INSERT INTO trips (guild_id, name, start_date, end_date, creator, note) VALUES ($1, $2, $3, $4, $5, $6)", interaction.guild_id, name, start, end, interaction.user.id, note)
+                    await conn.execute("INSERT INTO trip_members (guild_id, trip_name, user_id) VALUES ($1, $2, $3)", interaction.guild_id, name, interaction.user.id)
                     await interaction.response.send_message(f"🎒 **旅程核心已建立！**\n名稱：`{name}`")
                 except Exception as e:
                     await interaction.response.send_message(f"❌ 建立失敗，名稱可能已存在。({e})", ephemeral=True)
@@ -222,13 +222,13 @@ class TravelPlanner(commands.Cog):
     @app_commands.autocomplete(name=trip_autocomplete)
     async def edit_trip(self, interaction: discord.Interaction, name: str, new_note: str):
         async with self.bot.db_pool.acquire() as conn:
-            trip = await conn.fetchrow("SELECT creator FROM trips WHERE name = $1", name)
+            trip = await conn.fetchrow("SELECT creator FROM trips WHERE guild_id = $1 AND name = $2", interaction.guild_id, name)
             if not trip:
                 await interaction.response.send_message("❌ 找不到該旅程。", ephemeral=True); return
             if trip["creator"] and trip["creator"] != interaction.user.id:
                 await interaction.response.send_message("❌ 您非旅程建立者，無法編輯備註。", ephemeral=True); return
             
-            await conn.execute("UPDATE trips SET note = $1 WHERE name = $2", new_note, name)
+            await conn.execute("UPDATE trips SET note = $1 WHERE guild_id = $2 AND name = $3", new_note, interaction.guild_id, name)
         await interaction.response.send_message(f"✅ {interaction.user.mention} 已成功更新旅程 **{name}** 的備註！")
 
     @app_commands.command(name="join_trip", description="加入旅程計畫")
@@ -236,13 +236,13 @@ class TravelPlanner(commands.Cog):
     async def join_trip(self, interaction: discord.Interaction, name: str):
         u_id = interaction.user.id
         async with self.bot.db_pool.acquire() as conn:
-            trip = await conn.fetchrow("SELECT * FROM trips WHERE name = $1", name)
+            trip = await conn.fetchrow("SELECT * FROM trips WHERE guild_id = $1 AND name = $2", interaction.guild_id, name)
             if not trip:
-                await conn.execute("INSERT INTO trips (name) VALUES ($1)", name)
+                await conn.execute("INSERT INTO trips (guild_id, name) VALUES ($1, $2)", interaction.guild_id, name)
             
-            member = await conn.fetchrow("SELECT * FROM trip_members WHERE trip_name = $1 AND user_id = $2", name, u_id)
+            member = await conn.fetchrow("SELECT * FROM trip_members WHERE guild_id = $1 AND trip_name = $2 AND user_id = $3", interaction.guild_id, name, u_id)
             if not member:
-                await conn.execute("INSERT INTO trip_members (trip_name, user_id) VALUES ($1, $2)", name, u_id)
+                await conn.execute("INSERT INTO trip_members (guild_id, trip_name, user_id) VALUES ($1, $2, $3)", interaction.guild_id, name, u_id)
                 await interaction.response.send_message(f"✨ 成功加入了旅程：**{name}**！")
             else:
                 await interaction.response.send_message("ℹ️ 您已在成員名單中。", ephemeral=True)
@@ -275,14 +275,14 @@ class TravelPlanner(commands.Cog):
             async with self.bot.db_pool.acquire() as conn:
                 # 驗證旅程是否存在 (排除 "未分組")
                 if final_t_name != "未分組":
-                    trip_exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM trips WHERE name = $1)", final_t_name)
+                    trip_exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM trips WHERE guild_id = $1 AND name = $2)", interaction.guild_id, final_t_name)
                     if not trip_exists:
                         await interaction.followup.send(f"❌ 找不到旅程：`{final_t_name}`。請確認名稱是否正確，或先使用 `/create_trip` 建立旅程。")
                         return
 
                 await conn.execute(
-                    "INSERT INTO schedules (id, datetime, has_time, task, trip_name, location, description, reminder_message, user_id, channel_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                    s_id, dt, has_time, task, final_t_name, location, description, reminder_message, interaction.user.id, interaction.channel_id
+                    "INSERT INTO schedules (id, guild_id, datetime, has_time, task, trip_name, location, description, reminder_message, user_id, channel_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                    s_id, interaction.guild_id, dt, has_time, task, final_t_name, location, description, reminder_message, interaction.user.id, interaction.channel_id
                 )
             
             w_str = ""
@@ -310,7 +310,7 @@ class TravelPlanner(commands.Cog):
     async def edit_schedule(self, interaction: discord.Interaction, full_task_id: str, new_task: str = None, new_location: str = None, new_reminder_message: str = None):
         u_id = interaction.user.id
         async with self.bot.db_pool.acquire() as conn:
-            target = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1 AND user_id = $2", full_task_id, u_id)
+            target = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1 AND user_id = $2 AND guild_id = $3", full_task_id, u_id, interaction.guild_id)
             if not target:
                 await interaction.response.send_message("❌ 找不到該筆紀錄或您無權編輯。", ephemeral=True); return
 
@@ -349,12 +349,12 @@ class TravelPlanner(commands.Cog):
     async def delete_schedule(self, interaction: discord.Interaction, full_task_id: str):
         u_id = interaction.user.id
         async with self.bot.db_pool.acquire() as conn:
-            target = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1", full_task_id)
+            target = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1 AND guild_id = $2", full_task_id, interaction.guild_id)
             if not target:
                 await interaction.response.send_message("❌ 找不到行程資料。", ephemeral=True); return
 
             # 權限檢查：只有建立者或旅程 owner 可以刪除
-            trip = await conn.fetchrow("SELECT creator FROM trips WHERE name = $1", target["trip_name"])
+            trip = await conn.fetchrow("SELECT creator FROM trips WHERE guild_id = $1 AND name = $2", interaction.guild_id, target["trip_name"])
             is_owner = (u_id == target["user_id"]) or (trip and trip["creator"] == u_id)
             
             if not is_owner:
@@ -376,9 +376,9 @@ class TravelPlanner(commands.Cog):
     @app_commands.autocomplete(name=trip_autocomplete)
     async def view_trip(self, interaction: discord.Interaction, name: str):
         async with self.bot.db_pool.acquire() as conn:
-            trip = await conn.fetchrow("SELECT * FROM trips WHERE name = $1", name)
-            members = await conn.fetch("SELECT user_id FROM trip_members WHERE trip_name = $1", name)
-            related = await conn.fetch("SELECT * FROM schedules WHERE trip_name = $1 ORDER BY datetime ASC", name)
+            trip = await conn.fetchrow("SELECT * FROM trips WHERE guild_id = $1 AND name = $2", interaction.guild_id, name)
+            members = await conn.fetch("SELECT user_id FROM trip_members WHERE guild_id = $1 AND trip_name = $2", interaction.guild_id, name)
+            related = await conn.fetch("SELECT * FROM schedules WHERE guild_id = $1 AND trip_name = $2 ORDER BY datetime ASC", interaction.guild_id, name)
             
         if not trip and not related:
             await interaction.response.send_message(f"❌ 查無此分組。", ephemeral=True); return
@@ -412,8 +412,8 @@ class TravelPlanner(commands.Cog):
     async def list_trips(self, interaction: discord.Interaction):
         u_id = interaction.user.id
         async with self.bot.db_pool.acquire() as conn:
-            trips = await conn.fetch("SELECT * FROM trips")
-            uncat_count = await conn.fetchval("SELECT COUNT(*) FROM schedules WHERE trip_name = '未分組' AND user_id = $1", u_id)
+            trips = await conn.fetch("SELECT * FROM trips WHERE guild_id = $1", interaction.guild_id)
+            uncat_count = await conn.fetchval("SELECT COUNT(*) FROM schedules WHERE trip_name = '未分組' AND user_id = $1 AND guild_id = $2", u_id, interaction.guild_id)
             
         if not trips and uncat_count == 0:
             await interaction.response.send_message("目前無資料。", ephemeral=True); return
@@ -421,7 +421,7 @@ class TravelPlanner(commands.Cog):
         embed = discord.Embed(title="✈️ 旅程預覽", color=discord.Color.blue())
         for t in trips:
             async with self.bot.db_pool.acquire() as conn:
-                m_count = await conn.fetchval("SELECT COUNT(*) FROM trip_members WHERE trip_name = $1", t['name'])
+                m_count = await conn.fetchval("SELECT COUNT(*) FROM trip_members WHERE guild_id = $1 AND trip_name = $2", interaction.guild_id, t['name'])
             
             period = f"`{t['start_date']}` 到 `{t['end_date']}`" if t["start_date"] else "日期未定"
             note_str = f"\n📝 備註: {t['note'][:20]}..." if t.get("note") else ""
@@ -438,7 +438,7 @@ class TravelPlanner(commands.Cog):
         @app_commands.autocomplete(full_task_id=schedule_autocomplete)
         async def test_notification(self, interaction: discord.Interaction, full_task_id: str, simulate_days_left: int = 0):
             async with self.bot.db_pool.acquire() as conn:
-                s = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1", full_task_id)
+                s = await conn.fetchrow("SELECT * FROM schedules WHERE id = $1 AND guild_id = $2", full_task_id, interaction.guild_id)
             
             if not s:
                 await interaction.response.send_message("❌ 找不到行程資料。", ephemeral=True); return
@@ -502,7 +502,7 @@ class TravelPlanner(commands.Cog):
         m_set = {s["user_id"]}
         if s["trip_name"] != "未分組":
             async with self.bot.db_pool.acquire() as conn:
-                members = await conn.fetch("SELECT user_id FROM trip_members WHERE trip_name = $1", s["trip_name"])
+                members = await conn.fetch("SELECT user_id FROM trip_members WHERE guild_id = $1 AND trip_name = $2", s["guild_id"], s["trip_name"])
                 for m in members: m_set.add(m["user_id"])
         return " ".join([f"<@{u}>" for u in m_set])
 
