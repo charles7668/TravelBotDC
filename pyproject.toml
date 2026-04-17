@@ -8,5 +8,7 @@ dependencies = [
     "aiohttp>=3.13.4",
     "asyncpg>=0.31.0",
     "discord-py>=2.7.1",
+    "langchain>=1.2.15",
+    "langchain-openai>=1.1.14",
     "python-dotenv>=1.2.2",
 ]
